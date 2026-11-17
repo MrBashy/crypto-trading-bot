@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crypto Bot</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Crypto Bot</div>
+    <span id="mode-badge" class="badge">…</span>
+    <span id="run-status" class="pill">…</span>
+    <div class="spacer"></div>
+    <button class="btn btn-go" id="btn-start" title="Start opening new trades">Start</button>
+    <button class="btn" id="btn-stop" title="Stop opening new trades (open positions stay protected)">Stop</button>
+    <button class="btn btn-danger" id="btn-emergency" title="Sell everything now and stop">Emergency: sell all &amp; stop</button>
+    <button class="btn btn-ghost" id="btn-logout">Log out</button>
+  </header>
+  <div id="live-banner" class="live-banner hidden">LIVE MODE: this bot is trading with REAL money on <span id="live-exchange"></span></div>
+  <div id="error-banner" class="error-banner hidden"></div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="backtest">Backtest</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="mode">Paper / Live</button>
+    <button class="tab" data-tab="account">Password</button>
+  </nav>
+
+  <main>
+    <!-- ============================== DASHBOARD ============================== -->
+    <section id="tab-dashboard" class="tab-panel">
+      <div class="stats">
+        <div class="stat"><div class="stat-label">Account value</div><div class="stat-value" id="st-equity">–</div></div>
+        <div class="stat"><div class="stat-label">Cash</div><div class="stat-value" id="st-cash">–</div></div>
+        <div class="stat"><div class="stat-label">Today's P&amp;L</div><div class="stat-value" id="st-day">–</div></div>
+        <div class="stat"><div class="stat-label">Realised P&amp;L (all time)</div><div class="stat-value" id="st-pnl">–</div></div>
+        <div class="stat"><div class="stat-label">Win rate</div><div class="stat-value" id="st-winrate">–</div></div>
+        <div class="stat"><div class="stat-label">Open positions</div><div class="stat-value" id="st-open">–</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Chart</h2>
+          <select id="chart-symbol" aria-label="Pair"></select>
+          <div class="seg" role="group" aria-label="Chart type">
+            <button class="seg-btn active" data-view="bot">Bot chart</button>
+            <button class="seg-btn" data-view="tv">TradingView</button>
+          </div>
+          <div class="spacer"></div>
+          <span class="legend"><i class="sw sw-fast"></i><span id="lg-fast">EMA fast</span> <i class="sw sw-slow"></i><span id="lg-slow">EMA slow</span> <span class="up">▲ buy</span> <span class="down">▼ sell</span></span>
+        </div>
+        <div id="chart-bot" class="chart"></div>
+        <div id="chart-tv" class="chart hidden"></div>
+        <div id="signals" class="signals"></div>
+      </div>
+
+      <div class="card">
+        <h2>Open positions</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Pair</th><th>Amount</th><th>Entry</th><th>Now</th><th>Value</th><th>P&amp;L</th><th>Stop</th><th>Target</th><th>Opened</th><th></th></tr></thead>
+          <tbody id="positions-body"></tbody>
+        </table></div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <h2>Recent trades</h2>
+          <div class="table-wrap tall"><table>
+            <thead><tr><th>Closed</th><th>Pair</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Reason</th></tr></thead>
+            <tbody id="trades-body"></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <h2>Activity log</h2>
+          <div class="log tall" id="log"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Account value over time</h2>
+          <select id="equity-days" aria-label="Period">
+            <option value="1">1 day</option><option value="7" selected>7 days</option>
+            <option value="30">30 days</option><option value="365">1 year</option>
+          </select>
+        </div>
+        <div id="chart-equity" class="chart small"></div>
+      </div>
+    </section>
+
+    <!-- ============================== BACKTEST ============================== -->
+    <section id="tab-backtest" class="tab-panel hidden">
+      <div class="card">
+        <h2>Backtest the current settings</h2>
+        <p class="muted">Replays the strategy over past candles using your current Settings (timeframe, EMAs, stop-loss, fees…).
+          Signals fill at the next candle's open, with fees and slippage included. Past results do not predict future results.</p>
+        <div class="row">
+          <label>Pair <select id="bt-symbol"></select></label>
+          <label>Candles <input type="number" id="bt-candles" value="1000" min="100" max="5000" step="100"></label>
+          <button class="btn btn-primary" id="bt-run">Run backtest</button>
+          <span id="bt-msg" class="muted"></span>
+        </div>
+      </div>
+      <div id="bt-results" class="hidden">
+        <div class="stats" id="bt-stats"></div>
+        <div class="card"><h2>Price &amp; trades</h2><div id="bt-chart" class="chart"></div></div>
+        <div class="card"><h2>Account value</h2><div id="bt-equity" class="chart small"></div></div>
+        <div class="card">
+          <h2>Trades</h2>
+          <div class="table-wrap tall"><table>
+            <thead><tr><th>Entry</th><th>Exit</th><th>Entry price</th><th>Exit price</th><th>P&amp;L</th><th>Reason</th></tr></thead>
+            <tbody id="bt-trades"></tbody>
+          </table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== SETTINGS ============================== -->
+    <section id="tab-settings" class="tab-panel hidden">
+      <form id="settings-form" class="card" novalidate>
+        <div id="settings-fields"></div>
+        <div class="row sticky-actions">
+          <button type="submit" class="btn btn-primary" id="settings-save">Save settings</button>
+          <button type="button" class="btn" id="settings-reload">Undo changes</button>
+          <button type="button" class="btn btn-ghost" id="settings-defaults">Fill in defaults</button>
+          <span id="settings-msg"></span>
+        </div>
+      </form>
+    </section>
+
+    <!-- ============================== MODE / KEYS ============================== -->
+    <section id="tab-mode" class="tab-panel hidden">
+      <div class="card">
+        <h2>Trading mode</h2>
+        <p>Current mode: <strong id="mode-current">…</strong></p>
+        <ul class="muted">
+          <li><strong>Paper</strong>: simulated trades using real live prices. No money is involved and no API keys are needed.</li>
+          <li><strong>Live</strong>: real orders on your exchange account using your API keys. You can lose real money.</li>
+          <li>To switch, first <strong>Stop</strong> the bot and close any open positions.</li>
+        </ul>
+        <div class="row">
+          <button class="btn btn-danger" id="btn-go-live">Switch to LIVE trading…</button>
+          <button class="btn btn-primary" id="btn-go-paper">Switch to PAPER trading</button>
+          <span id="mode-msg"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Exchange API keys</h2>
+        <p class="muted">Only needed for live trading. Create the key on your exchange's website with permission to
+          <strong>view balances and trade only</strong>. Never enable withdrawals. Keys are saved on this machine in
+          <code>data/secrets.json</code> (readable only by the bot's user).</p>
+        <p>Status: <span id="keys-status">…</span></p>
+        <form id="keys-form" class="keys-form" autocomplete="off">
+          <label>API key <input type="text" id="key-api" spellcheck="false" autocomplete="off"></label>
+          <label>API secret <textarea id="key-secret" rows="3" spellcheck="false" autocomplete="off"
+            placeholder="Paste the secret (multi-line private keys are fine)"></textarea></label>
+          <label>Passphrase <span class="muted">(only some exchanges, e.g. OKX / KuCoin)</span>
+            <input type="password" id="key-pass" autocomplete="new-password"></label>
+          <div class="row">
+            <button type="submit" class="btn btn-primary">Save keys</button>
+            <button type="button" class="btn" id="btn-test-keys">Test connection</button>
+            <button type="button" class="btn btn-ghost" id="btn-delete-keys">Remove keys</button>
+            <span id="keys-msg"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Reset paper account</h2>
+        <p class="muted">Deletes all paper trades and history and restarts with the "Paper starting balance" from Settings.</p>
+        <div class="row">
+          <button class="btn" id="btn-reset-paper">Reset paper account…</button>
+          <span id="reset-msg"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== ACCOUNT ============================== -->
+    <section id="tab-account" class="tab-panel hidden">
+      <form class="card narrow" id="password-form">
+        <h2>Change dashboard password</h2>
+        <label>Current password <input type="password" id="pw-current" autocomplete="current-password" required></label>
+        <label>New password (min 8 characters) <input type="password" id="pw-new" autocomplete="new-password" minlength="8" required></label>
+        <label>Repeat new password <input type="password" id="pw-new2" autocomplete="new-password" minlength="8" required></label>
+        <div class="row"><button class="btn btn-primary" type="submit">Change password</button><span id="pw-msg"></span></div>
+      </form>
+    </section>
+  </main>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog" id="confirm-form">
+      <h2 id="confirm-title"></h2>
+      <div id="confirm-body"></div>
+      <label id="confirm-label">Type <strong id="confirm-word"></strong> to confirm
+        <input type="text" id="confirm-input" autocomplete="off" spellcheck="false"></label>
+      <div class="row">
+        <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+        <button type="submit" class="btn btn-danger" id="confirm-ok">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <footer class="footer">Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a> ·
+    Proof of concept: trading crypto is risky; only trade money you can afford to lose.</footer>
+
+  <script src="/static/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Bot data: settings, database and SECRETS (API keys, password hash). Never commit.
+data/
+.env

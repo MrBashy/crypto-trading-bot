@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crypto Bot - Log in</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+  <form class="login-card" id="login-form" autocomplete="on">
+    <h1>Crypto Bot</h1>
+    <p class="muted">Enter your dashboard password</p>
+    <input type="password" id="password" name="password" autocomplete="current-password" placeholder="Password" required autofocus>
+    <button type="submit" class="btn btn-primary" id="login-btn">Log in</button>
+    <p class="error" id="login-error" role="alert"></p>
+  </form>
+  <script>
+    document.getElementById("login-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const btn = document.getElementById("login-btn");
+      const err = document.getElementById("login-error");
+      err.textContent = "";
+      btn.disabled = true;
+      try {
+        const r = await fetch("/api/login", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({password: document.getElementById("password").value}),
+        });
+        if (r.ok) { window.location.href = "/"; return; }
+        const data = await r.json().catch(() => ({}));
+        err.textContent = data.detail || "Login failed";
+      } catch (e) {
+        err.textContent = "Could not reach the bot. Is it running?";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
