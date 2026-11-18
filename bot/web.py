@@ -310,7 +310,16 @@ def create_app(engine: Engine | None = None, db: Database | None = None, start_e
             raise HTTPException(400, "API key and secret are both required.")
         if e.mode == "live" and e.trading_enabled:
             raise HTTPException(400, "Stop the bot before changing API keys.")
+        previous = secrets_store.get_api_keys()
         secrets_store.set_api_keys(body.api_key, body.api_secret, body.api_password)
+        if e.mode == "live":
+            # In live mode, never swap in keys that don't work.
+            try:
+                e.test_live_connection()
+            except EngineError:
+                if previous["api_key"]:
+                    secrets_store.set_api_keys(previous["api_key"], previous["api_secret"], previous["api_password"])
+                raise
         e.reload_broker()
         e.info("Exchange API keys saved")
         return {"ok": True}

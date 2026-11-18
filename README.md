@@ -54,6 +54,9 @@ it never touches other holdings in your account.
 - The daily loss limit compares against your account value at 00:00 UTC. Withdrawing money from the
   exchange during the day counts as a "loss" for this check.
 - Orders are market orders. Exchange minimum order sizes apply; trades below them are skipped and logged.
+- If the connection drops while an order is being placed, the bot checks your coin balance to see
+  whether it actually filled, so a filled order is never lost (the log says when this happens).
+  A sell that fails is retried every 30 seconds until it goes through.
 - Live order handling has been tested against a simulated exchange in the test suite, but not with real
   money. Start with a small *Max trade size*.
 

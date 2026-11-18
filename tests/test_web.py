@@ -215,3 +215,16 @@ def test_security_headers(app_client):
     r = app_client.get("/login")
     assert r.headers["x-frame-options"] == "DENY"
     assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_bad_keys_rejected_and_rolled_back_in_live_mode(app_client):
+    import ccxt
+    c = app_client
+    login(c)
+    c.post("/api/keys", json={"api_key": "goodkey12345", "api_secret": "goodsecret1234"}, headers=H)
+    assert c.post("/api/mode", json={"mode": "live", "confirm": "LIVE"}, headers=H).status_code == 200
+    ex = c.engine.broker.client
+    ex.balance_error = ccxt.AuthenticationError("invalid key")
+    r = c.post("/api/keys", json={"api_key": "badkey123456", "api_secret": "badsecret1234"}, headers=H)
+    assert r.status_code == 400 and "rejected" in r.json()["detail"]
+    assert secrets_store.get_api_keys()["api_key"] == "goodkey12345"

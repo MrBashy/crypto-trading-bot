@@ -1,3 +1,4 @@
+import ccxt
 import pytest
 
 from bot.brokers import LiveBroker, OrderFailed, PaperBroker, TradeSkipped
@@ -85,13 +86,43 @@ def test_live_buy_rejected_raises_order_failed(settings):
         LiveBroker(ex, settings, sleep=lambda s: None).buy("BTC/USD", 1000, QUOTE)
 
 
-def test_live_order_that_never_fills(settings):
+def test_unconfirmed_buy_that_did_fill_is_not_lost(settings):
+    """The exchange filled the order but never confirmed it: the coins must still be tracked."""
     ex = FakeExchange(fill_immediately=False)
     b = LiveBroker(ex, settings, sleep=lambda s: None, fill_timeout_seconds=0)
-    # make fetch_order always report "open / nothing filled"
     ex.fetch_order = lambda oid, symbol=None: {"id": oid, "status": "open", "filled": 0}
-    with pytest.raises(OrderFailed):
-        b.buy("BTC/USD", 1000, QUOTE)
+    fill = b.buy("BTC/USD", 1000, QUOTE)
+    assert fill.estimated is True
+    assert fill.amount == pytest.approx(ex.balances["BTC"])
+    assert fill.price == QUOTE["ask"]
+    assert fill.order_id == "1"
+
+
+def test_network_error_after_order_executed_is_not_lost(settings):
+    ex = FakeExchange()
+    ex.raise_after_create = ccxt.RequestTimeout("timed out")
+    fill = LiveBroker(ex, settings, sleep=lambda s: None).buy("BTC/USD", 1000, QUOTE)
+    assert fill.estimated is True
+    assert fill.amount == pytest.approx(ex.balances["BTC"]) and fill.amount > 0
+
+
+def test_network_error_when_order_never_placed(settings):
+    ex = FakeExchange()
+    ex.execute = False
+    ex.raise_after_create = ccxt.RequestTimeout("timed out")
+    with pytest.raises(OrderFailed, match="did not go through"):
+        LiveBroker(ex, settings, sleep=lambda s: None).buy("BTC/USD", 1000, QUOTE)
+    assert ex.balances["BTC"] == 0
+
+
+def test_unconfirmed_sell_that_did_fill(settings):
+    ex = FakeExchange()
+    ex.balances["BTC"] = 0.02
+    ex.raise_after_create = ccxt.NetworkError("connection reset")
+    fill = LiveBroker(ex, settings, sleep=lambda s: None).sell("BTC/USD", 0.02, QUOTE)
+    assert fill.estimated is True and fill.partial is False
+    assert fill.amount == pytest.approx(0.02)
+    assert fill.price == QUOTE["bid"]
 
 
 def test_live_sell_never_sells_more_than_balance(settings):

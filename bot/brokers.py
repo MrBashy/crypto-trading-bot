@@ -32,6 +32,7 @@ class Fill:
     fee: float             # total fee, expressed in quote currency
     order_id: str | None = None
     partial: bool = False  # True if a sell only part-filled (the rest is still held)
+    estimated: bool = False  # True if the exchange never confirmed the fill and it was worked out from balances
 
 
 class PaperBroker:
@@ -89,8 +90,11 @@ class LiveBroker:
     def balance(self) -> dict:
         return self.client.fetch_balance()
 
+    def _free(self, currency: str) -> float:
+        return float(self.balance().get("free", {}).get(currency) or 0)
+
     def cash(self) -> float:
-        return float(self.balance().get("free", {}).get(self.settings.quote_currency) or 0)
+        return self._free(self.settings.quote_currency)
 
     def total_cash(self) -> float:
         return float(self.balance().get("total", {}).get(self.settings.quote_currency) or 0)
@@ -118,25 +122,52 @@ class LiveBroker:
         self._check_limits(symbol, amount, price)
         # Some exchanges (e.g. Coinbase) need the price to work out a market buy's value.
         order_price = price if self.client.options.get("createMarketBuyOrderRequiresPrice") else None
-        try:
-            order = self.client.create_order(symbol, "market", "buy", amount, order_price)
-        except ccxt.BaseError as e:
-            raise OrderFailed(f"buy {symbol} rejected by exchange: {e}") from e
-        return self._to_fill(self._wait_for_fill(order, symbol), market, "buy")
+        before = self._free(market["base"])
+        return self._execute(symbol, market, "buy", amount, order_price, price, before)
 
     def sell(self, symbol: str, amount: float, quote: dict) -> Fill:
         market = self._market(symbol)
-        free_base = float(self.balance().get("free", {}).get(market["base"]) or 0)
+        before = self._free(market["base"])
         # Never try to sell more than we actually hold (fees may have been taken in the coin).
-        amount = self._round_amount(symbol, min(amount, free_base))
+        amount = self._round_amount(symbol, min(amount, before))
         self._check_limits(symbol, amount, quote["bid"])
-        try:
-            order = self.client.create_order(symbol, "market", "sell", amount)
-        except ccxt.BaseError as e:
-            raise OrderFailed(f"sell {symbol} rejected by exchange: {e}") from e
-        fill = self._to_fill(self._wait_for_fill(order, symbol), market, "sell")
+        fill = self._execute(symbol, market, "sell", amount, None, quote["bid"], before)
         fill.partial = fill.amount < amount * 0.99
         return fill
+
+    def _execute(self, symbol: str, market: dict, side: str, amount: float, order_price: float | None,
+                 est_price: float, base_before: float) -> Fill:
+        """Place a market order and report what really happened.
+
+        If the result is unclear (a network error while placing it, or the fill can't be
+        confirmed), the coin balance is compared with before the order, so an order that
+        did fill is never mistaken for a failed one (which would leave coins untracked).
+        """
+        try:
+            order = self.client.create_order(symbol, "market", side, amount, order_price)
+        except ccxt.NetworkError as e:
+            return self._reconcile(symbol, market, side, base_before, est_price, f"network error placing order: {e}")
+        except ccxt.BaseError as e:
+            raise OrderFailed(f"{side} {symbol} rejected by exchange: {e}") from e
+        try:
+            return self._to_fill(self._wait_for_fill(order, symbol), market, side)
+        except OrderFailed as e:
+            return self._reconcile(symbol, market, side, base_before, est_price, str(e), order.get("id"))
+
+    def _reconcile(self, symbol: str, market: dict, side: str, base_before: float, est_price: float,
+                   problem: str, order_id=None) -> Fill:
+        self.sleep(2)  # give the exchange a moment to update balances
+        try:
+            after = self._free(market["base"])
+        except ccxt.BaseError as e:
+            raise OrderFailed(f"{side} {symbol}: {problem}. Could not check the balance either ({e}) - "
+                              f"CHECK YOUR EXCHANGE ACCOUNT") from e
+        change = (after - base_before) if side == "buy" else (base_before - after)
+        if change <= 0:
+            raise OrderFailed(f"{side} {symbol} did not go through: {problem}")
+        cost = change * est_price
+        return Fill(amount=change, price=est_price, cost=cost, fee=cost * self.settings.fee_pct / 100,
+                    order_id=str(order_id) if order_id is not None else None, estimated=True)
 
     def _wait_for_fill(self, order: dict, symbol: str) -> dict:
         """Market orders fill almost instantly, but exchanges report them asynchronously."""

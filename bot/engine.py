@@ -54,6 +54,8 @@ class Engine:
         self._thread: threading.Thread | None = None
         self._last_equity_snapshot = 0.0
         self._exit_retry_after: dict[int, float] = {}
+        # Exits that were decided but failed (e.g. exchange error) - retried every tick until done.
+        self._pending_exits: dict[int, str] = {}
         self._last_error_logged: tuple[str, float] | None = None
         # Live state shown on the dashboard (refreshed every tick).
         self.state: dict = {"prices": {}, "signals": {}, "equity": None, "cash": None,
@@ -155,7 +157,7 @@ class Engine:
                 if quote["last"] > p["highest_price"]:
                     self.db.update_highest_price(p["id"], quote["last"])
                     p["highest_price"] = quote["last"]
-                reason = exit_reason(p, quote["last"], s)
+                reason = exit_reason(p, quote["last"], s) or self._pending_exits.get(p["id"])
                 if reason:
                     self._close(p, quote, reason)
 
@@ -282,6 +284,9 @@ class Engine:
             self.error(f"{symbol}: BUY FAILED - {e}")
             return
         self._record_entry(symbol, fill, reason)
+        if fill.estimated:
+            self.warn(f"{symbol}: the exchange did not confirm the buy, so the amount was worked out from your "
+                      f"balance and the price is estimated. Check the order on the exchange.")
 
     def _record_entry(self, symbol: str, fill: Fill, reason: str) -> None:
         s, mode, now = self.settings, self.mode, self.clock()
@@ -322,10 +327,15 @@ class Engine:
             return False
         except (OrderFailed, ccxt.BaseError) as e:
             self._exit_retry_after[pid] = now + EXIT_RETRY_SECONDS
-            self.error(f"{position['symbol']}: SELL FAILED (will retry) - {e}")
+            self._pending_exits[pid] = reason
+            self.error(f"{position['symbol']}: SELL FAILED (retrying every {EXIT_RETRY_SECONDS}s) - {e}")
             return False
         self._exit_retry_after.pop(pid, None)
         self._record_exit(position, fill, reason)
+        if fill.partial:
+            self._pending_exits[pid] = reason   # sell the rest on the next tick
+        else:
+            self._pending_exits.pop(pid, None)
         return not fill.partial
 
     def _record_exit(self, position: dict, fill: Fill, reason: str) -> None:
@@ -358,6 +368,8 @@ class Engine:
             if mode == "paper":
                 self.db.set("paper_cash", self.broker.cash() + proceeds, conn=c)
         part = " (PARTIAL fill - remainder still open)" if fill.partial else ""
+        if fill.estimated:
+            part += " (exchange did not confirm the fill: amount from balance change, price estimated)"
         self.info(f"SELL {fill.amount:.8g} {position['symbol']} @ {fill.price:.6g} - P&L {pnl:+.2f} {s.quote_currency} "
                   f"({pnl_pct:+.2f}%) - {reason}{part}")
 
@@ -414,7 +426,11 @@ class Engine:
             if not p or p["mode"] != self.mode:
                 raise EngineError("Position not found")
             self._exit_retry_after.pop(position_id, None)
-            if not self._close(p, self.market.price(p["symbol"]), "closed manually"):
+            try:
+                quote = self.market.price(p["symbol"])
+            except Exception as e:
+                raise EngineError(f"Could not get the current {p['symbol']} price: {e}") from e
+            if not self._close(p, quote, "closed manually"):
                 raise EngineError(f"Could not close {p['symbol']} - see the activity log")
 
     def apply_settings(self, new: Settings) -> None:
@@ -463,13 +479,15 @@ class Engine:
         keys = secrets_store.get_api_keys()
         if not (keys["api_key"] and keys["api_secret"]):
             raise EngineError("No API keys saved.")
-        client = self._live_client_factory(self.settings.exchange, keys)
         try:
+            client = self._live_client_factory(self.settings.exchange, keys)
             bal = client.fetch_balance()
         except ccxt.AuthenticationError as e:
             raise EngineError(f"The exchange rejected the API keys: {e}") from e
         except ccxt.BaseError as e:
             raise EngineError(f"Could not connect to {self.settings.exchange}: {e}") from e
+        except Exception as e:  # e.g. a badly pasted private key that can't be parsed
+            raise EngineError(f"The API keys could not be used: {type(e).__name__}: {e}") from e
         q = self.settings.quote_currency
         return {"quote": q, "free": float(bal.get("free", {}).get(q) or 0),
                 "total": float(bal.get("total", {}).get(q) or 0)}
@@ -481,6 +499,8 @@ class Engine:
             if self.trading_enabled:
                 raise EngineError("Stop the bot before resetting the paper account.")
             self.db.clear_mode_history("paper")
+            self._pending_exits.clear()
+            self._exit_retry_after.clear()
             self.db.set("paper_cash", self.settings.paper_starting_balance)
             for key in ("day_start:paper", "halted_date:paper"):
                 self.db.delete(key)

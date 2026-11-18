@@ -92,6 +92,9 @@ class FakeExchange:
         self.created: list[tuple] = []
         self.fee_rate = 0.001
         self.reject_next = False
+        self.execute = True              # False: the order never reaches the order book
+        self.raise_after_create = None   # exception raised after the order (maybe) executed
+        self.balance_error = None        # exception raised by fetch_balance
 
     def load_markets(self):
         return self.markets
@@ -101,6 +104,8 @@ class FakeExchange:
         return f"{int(amount * 100000) / 100000:.5f}"
 
     def fetch_balance(self):
+        if self.balance_error:
+            raise self.balance_error
         return {"free": dict(self.balances), "total": dict(self.balances)}
 
     def create_order(self, symbol, type_, side, amount, price=None):
@@ -108,6 +113,8 @@ class FakeExchange:
             self.reject_next = False
             raise ccxt.InsufficientFunds("not enough funds")
         self.created.append((symbol, type_, side, amount, price))
+        if not self.execute:
+            raise self.raise_after_create
         oid = str(len(self.orders) + 1)
         cost = amount * self.price
         fee = cost * self.fee_rate
@@ -127,6 +134,8 @@ class FakeExchange:
         done = {"id": oid, "status": "closed", "filled": amount, "average": self.price, "cost": cost,
                 "fee": fee_obj, "fees": [fee_obj], "price": None}
         self.orders[oid] = done
+        if self.raise_after_create:
+            raise self.raise_after_create
         if self.fill_immediately:
             return dict(done)
         return {"id": oid, "status": "open", "filled": 0, "average": None, "cost": 0, "fee": None, "fees": []}

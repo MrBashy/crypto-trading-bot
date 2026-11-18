@@ -337,3 +337,67 @@ def test_exchange_change_blocked_in_live_mode(db, settings, market, clock):
     e.set_mode("live")
     with pytest.raises(EngineError, match="paper mode"):
         e.apply_settings(settings.model_copy(update={"exchange": "coinbase"}))
+
+
+def test_failed_sell_signal_exit_is_retried(db, settings, market, clock):
+    """A sell-signal exit that fails must be retried even though the candle was already processed."""
+    ex = FakeExchange(quote_balance=5000)
+    secrets_store.set_api_keys("key", "secret")
+    s = settings.model_copy(update={"stop_loss_pct": 40, "take_profit_pct": 0})
+    market.closes["BTC/USD"] = CROSS_UP
+    market.prices["BTC/USD"] = 50000.0
+    e = make_engine(db, s, market, clock, live_client_factory=lambda ex_id, keys: ex,
+                    live_broker_kwargs={"sleep": lambda s: None})
+    e.set_mode("live")
+    e.start_trading()
+    e.tick()
+    assert len(db.open_positions("live")) == 1
+    clock.advance(300)
+    market.closes["BTC/USD"] = CROSS_DOWN
+    ex.reject_next = True
+    e.tick()                                   # sell signal -> exchange rejects it
+    assert len(db.open_positions("live")) == 1
+    clock.advance(10)
+    e.tick()                                   # too soon to retry
+    assert len(db.open_positions("live")) == 1
+    clock.advance(25)
+    e.tick()                                   # retried, same candle, no new signal needed
+    assert db.open_positions("live") == []
+    assert db.trades("live")[0]["exit_reason"].startswith("sell signal")
+
+
+def test_estimated_fill_is_tracked_and_warned(db, settings, market, clock):
+    import ccxt
+    ex = FakeExchange(quote_balance=5000)
+    ex.raise_after_create = ccxt.RequestTimeout("timed out")
+    secrets_store.set_api_keys("key", "secret")
+    market.closes["BTC/USD"] = CROSS_UP
+    market.prices["BTC/USD"] = 50000.0
+    e = make_engine(db, settings, market, clock, live_client_factory=lambda ex_id, keys: ex,
+                    live_broker_kwargs={"sleep": lambda s: None})
+    e.set_mode("live")
+    e.start_trading()
+    e.tick()
+    pos = db.open_positions("live")
+    assert len(pos) == 1 and pos[0]["amount"] == pytest.approx(ex.balances["BTC"])
+    assert any("did not confirm the buy" in l["message"] for l in db.recent_logs())
+
+
+def test_manual_close_with_no_price_gives_clear_error(db, settings, market, clock):
+    market.closes["BTC/USD"] = CROSS_UP
+    market.prices["BTC/USD"] = 95.0
+    e = make_engine(db, settings, market, clock)
+    e.start_trading()
+    e.tick()
+    market.fail_price = True
+    with pytest.raises(EngineError, match="Could not get the current BTC/USD price"):
+        e.close_position(db.open_positions("paper")[0]["id"])
+
+
+def test_connection_test_handles_unexpected_errors(db, settings, market, clock):
+    def broken_factory(ex_id, keys):
+        raise ValueError("Could not deserialize key data")
+    secrets_store.set_api_keys("key", "secret")
+    e = make_engine(db, settings, market, clock, live_client_factory=broken_factory)
+    with pytest.raises(EngineError, match="could not be used"):
+        e.test_live_connection()
